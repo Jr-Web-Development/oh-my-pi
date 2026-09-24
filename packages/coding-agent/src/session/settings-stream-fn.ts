@@ -20,6 +20,7 @@ import { type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
 import { serverSideFallbackModels } from "@oh-my-pi/pi-catalog/compat/server-side-fallback";
 import type { Encoding } from "@oh-my-pi/pi-natives";
 import { type Settings, validateProviderMaxInFlightRequests } from "../config/settings";
+import { decideToolRoute, type ToolRouterSource } from "./tool-router";
 
 function timeoutSecondsToMs(value: number): number | undefined {
 	if (!Number.isFinite(value) || value < 0) return undefined;
@@ -36,8 +37,18 @@ function timeoutSecondsToMs(value: number): number | undefined {
  * would exceed the model's context window (see
  * {@link fitOutputTokensToContextWindow}); every request this session drives,
  * including side turns like `/btw`, goes through here.
+ *
+ * When `toolRouter` is provided, the merged options additionally pass through
+ * the native Jev tool router before `base` (i.e. before `mapOptionsForApi`
+ * and provider serialization). The router only emits generic `ToolChoice`
+ * values and fail-opens to the merged options, so omitting `toolRouter`
+ * preserves the exact historical behavior.
  */
-export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn = streamSimple): StreamFn {
+export function createSettingsAwareStreamFn(
+	settings: Settings,
+	base: StreamFn = streamSimple,
+	toolRouter?: ToolRouterSource,
+): StreamFn {
 	// One tokenizer per encoding, so per-message counts are reused across requests.
 	const tokenizers = new Map<Encoding | null, Tokenizer>();
 	return (model, context, streamOptions) => {
@@ -101,6 +112,9 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			hideThinkingSummary: streamOptions?.hideThinkingSummary ?? settings.get("omitThinking"),
 			...(fallbacks !== undefined ? { fallbacks } : {}),
 		};
-		return base(model, context, merged);
+		if (toolRouter === undefined) return base(model, context, merged);
+		const outcome = decideToolRoute(model, context, merged, toolRouter, settings);
+		if (outcome instanceof Promise) return outcome.then(resolved => base(model, context, resolved.options));
+		return base(model, context, outcome.options);
 	};
 }
