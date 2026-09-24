@@ -4331,20 +4331,14 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
-			group: "Tool Router",
+			group: "Available Tools",
 			label: "Jev Tool Router",
 			description:
 				"Experimental: let the judge model role (jev) force a generic tool choice (named tool or none) before the main inference, reusing the existing provider tool-choice mappers. Off by default; failures always fall back to the normal path",
 		},
 	},
-	"toolRouter.model": { type: "string", default: "@judge" },
 	"toolRouter.minConfidence": { type: "number", default: 0.7 },
 	"toolRouter.timeoutMs": { type: "number", default: 1500 },
-	"toolRouter.mode": {
-		type: "enum",
-		values: ["conservative"] as const,
-		default: "conservative",
-	},
 
 	// Optional tools
 

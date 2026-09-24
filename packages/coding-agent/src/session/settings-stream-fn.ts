@@ -20,7 +20,7 @@ import { type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
 import { serverSideFallbackModels } from "@oh-my-pi/pi-catalog/compat/server-side-fallback";
 import type { Encoding } from "@oh-my-pi/pi-natives";
 import { type Settings, validateProviderMaxInFlightRequests } from "../config/settings";
-import { decideToolRoute, type ToolRouterSource } from "./tool-router";
+import { decideToolRoute, createToolRouterTurnState, type ToolRouterSource } from "./tool-router";
 
 function timeoutSecondsToMs(value: number): number | undefined {
 	if (!Number.isFinite(value) || value < 0) return undefined;
@@ -51,6 +51,10 @@ export function createSettingsAwareStreamFn(
 ): StreamFn {
 	// One tokenizer per encoding, so per-message counts are reused across requests.
 	const tokenizers = new Map<Encoding | null, Tokenizer>();
+	// One user turn pays at most one Jev call per wrapper instance; the gate
+	// is keyed by turn fingerprint, so retries/fallbacks reuse and post-tool
+	// follow-ups pass through undecided.
+	const turn = toolRouter === undefined ? undefined : createToolRouterTurnState();
 	return (model, context, streamOptions) => {
 		const openrouterRoutingPreset = settings.get("providers.openrouterVariant");
 		const openrouterVariant =
@@ -113,7 +117,7 @@ export function createSettingsAwareStreamFn(
 			...(fallbacks !== undefined ? { fallbacks } : {}),
 		};
 		if (toolRouter === undefined) return base(model, context, merged);
-		const outcome = decideToolRoute(model, context, merged, toolRouter, settings);
+		const outcome = decideToolRoute(model, context, merged, toolRouter, settings, turn);
 		if (outcome instanceof Promise) return outcome.then(resolved => base(model, context, resolved.options));
 		return base(model, context, outcome.options);
 	};

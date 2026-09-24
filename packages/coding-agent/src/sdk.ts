@@ -8,6 +8,7 @@ import {
 	type AgentTool,
 	AppendOnlyContextManager,
 	filterProviderReplayMessages,
+	type StreamFn,
 	type ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import type {
@@ -185,6 +186,7 @@ import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
 import { collectMountedMCPToolRoutes, projectMountedMCPXdevGuidance } from "./session/session-tools";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
+import type { ToolRouterScope } from "./session/tool-router";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
 import { createSnapcompactSavingsRecorder } from "./session/snapcompact-savings-journal";
 import { createSpeculativeToolExecutionConfig } from "./speculation/host";
@@ -3708,14 +3710,23 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// live `judge` role chain. Judgment backends call core
 		// `streamSimple`/`completeSimple` directly, never this wrapper, so a
 		// judgment side request cannot re-enter the router (see tool-router.ts).
+		// Only the main loop is eligible for routing (scope "main"); advisor,
+		// capture, and side-channel consumers take the base path with zero
+		// judge calls. The provider concurrency semaphores are module-shared,
+		// so per-consumer pipelines do not widen per-provider in-flight caps.
 		const toolRouterJudge = resolveJudge({ settings, registry: modelRegistry, sessionId: providerSessionId });
-		const settingsAwareStreamFn = wrapStreamFnWithBlobUrlFallback(
-			wrapStreamFnWithProviderConcurrency(
-				settings,
-				createSettingsAwareStreamFn(settings, streamSimple, { getJudge: () => toolRouterJudge }),
-			),
-			blobBroker,
-		);
+		const scopedStreamFn = (scope: ToolRouterScope): StreamFn =>
+			wrapStreamFnWithBlobUrlFallback(
+				wrapStreamFnWithProviderConcurrency(
+					settings,
+					createSettingsAwareStreamFn(settings, streamSimple, { getJudge: () => toolRouterJudge, scope }),
+				),
+				blobBroker,
+			);
+		const settingsAwareStreamFn = scopedStreamFn("main");
+		const settingsAwareAdvisorStreamFn = scopedStreamFn("advisor");
+		const settingsAwareSideStreamFn = scopedStreamFn("side-channel");
+		const settingsAwareCaptureStreamFn = scopedStreamFn("capture");
 		const codeModeState: { namespacesInfo?: unknown } = {};
 		const transformToolCallArguments = (args: Record<string, unknown>): Record<string, unknown> => {
 			let result = args;
@@ -4003,8 +4014,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			transformProviderContext,
 			onPayload,
 			onResponse,
-			sideStreamFn: settingsAwareStreamFn,
-			advisorStreamFn: settingsAwareStreamFn,
+			sideStreamFn: settingsAwareSideStreamFn,
+			advisorStreamFn: settingsAwareAdvisorStreamFn,
 			preferWebsockets: preferOpenAICodexWebsockets,
 			convertToLlm: convertToLlmFinal,
 			rebuildSystemPrompt,
@@ -4384,7 +4395,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					kimiApiFormat,
 					preferWebsockets: preferOpenAICodexWebsockets,
 					getToolContext: toolCall => toolContextStore.getContext(toolCall),
-					streamFn: settingsAwareStreamFn,
+					streamFn: settingsAwareCaptureStreamFn,
 					transformToolCallArguments,
 					// No fallback resolver. The capture agent advertises only
 					// `learn`/`manage_skill`, both of which stay top-level and never
