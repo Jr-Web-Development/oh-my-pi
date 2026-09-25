@@ -1,0 +1,384 @@
+# Keeps the `jev-daily` install branch in sync with upstream `main`.
+#
+# Resides on the default branch (`main`) and runs on schedule. It never
+# touches `feat/native-jev-tool-router` (frozen: d9c6832201d273205c3202ecf369f8a4dd7aeea1),
+# never rebases, and never force-pushes.
+#
+# Two jobs enforce least privilege: `validate` (read-only token) merges and
+# runs every gate; `publish` (write token) only verifies SHAs and pushes the
+# exact validated commit. No candidate code ever executes with a write token.
+#
+# Integrity model: the candidate SHA is sealed in `sync` BEFORE any code
+# executes. After the gates, `Seal validated candidate` proves HEAD and the
+# tracked tree still match the seal; `package` bundles that sealed SHA;
+# `publish` trusts `needs.validate.outputs` (never the manifest alone) and
+# re-verifies everything before pushing.
+name: jev-daily-sync
+
+on:
+  schedule:
+    - cron: "7 7 * * *"
+      timezone: "America/Sao_Paulo"
+  workflow_dispatch:
+
+concurrency:
+  group: jev-daily-sync
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Merge upstream and validate candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      before_sha: ${{ steps.sync.outputs.before_sha }}
+      upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
+      feature_sha: ${{ steps.sync.outputs.feature_sha }}
+      candidate_sha: ${{ steps.sync.outputs.candidate_sha }}
+      already_included: ${{ steps.sync.outputs.already_included }}
+      merge_result: ${{ steps.sync.outputs.merge_result }}
+      feature_present: ${{ steps.sync.outputs.feature_present }}
+    steps:
+      - name: Check out jev-daily with full history
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: jev-daily
+          fetch-depth: 0
+
+      - name: Merge upstream main into jev-daily
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Never assume the fork mirror is fresh: fetch upstream explicitly.
+          git remote add upstream https://github.com/can1357/oh-my-pi.git 2>/dev/null || true
+          git fetch upstream main
+          {
+            echo "before_sha=$(git rev-parse HEAD)"
+            echo "upstream_sha=$(git rev-parse upstream/main)"
+            echo "feature_sha=d9c6832201d273205c3202ecf369f8a4dd7aeea1"
+          } >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "already_included=true" >> "$GITHUB_OUTPUT"
+            echo "merge_result=noop" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_included=false" >> "$GITHUB_OUTPUT"
+            if git merge --no-edit upstream/main; then
+              echo "merge_result=merged" >> "$GITHUB_OUTPUT"
+            else
+              git merge --abort || true
+              echo "merge_result=conflict" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+          # Runs on the NOOP path too: a healthy no-op must still prove this.
+          if ! git merge-base --is-ancestor d9c6832201d273205c3202ecf369f8a4dd7aeea1 HEAD; then
+            echo "feature_present=no" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "feature_present=yes" >> "$GITHUB_OUTPUT"
+          # SEAL: authoritative candidate SHA, captured BEFORE any code below
+          # executes (install/tests/checks). Everything downstream must prove
+          # it still matches this value.
+          echo "candidate_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Restore bun store
+        id: bun-cache
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install dependencies
+        id: install
+        # Runs against the POST-merge tree, so a bun.lock/package.json change
+        # from upstream is installed before any test runs.
+        run: bun install --frozen-lockfile
+
+      - name: Save bun store
+        if: steps.install.outcome == 'success' && steps.bun-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+
+      - name: Fetch release native addons (npm)
+        id: addon
+        # Same source the repo's own PR path uses (ci.yml): the gates below
+        # need the .node addons and scheduled runs never build them.
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$(npm view @oh-my-pi/pi-natives-linux-x64@latest dist.tarball)"
+          curl -fsSL --retry 3 "$tarball" | tar -xz -C "$RUNNER_TEMP"
+          cp "$RUNNER_TEMP/package/pi_natives.linux-x64-modern.node" \
+             "$RUNNER_TEMP/package/pi_natives.linux-x64-baseline.node" \
+             packages/natives/native/
+          # A corrupt download must fail here, not as a confusing dlopen
+          # error inside the tests (`bun -e require()` swallows dlopen
+          # failures, so a script file enforces them — same rationale as ci.yml).
+          cat > "$RUNNER_TEMP/smoke-addons.js" <<'EOF'
+          for (const f of process.argv.slice(2)) {
+           const m = require(f);
+           if (!m || Object.keys(m).length === 0) {
+           	console.error(`addon failed to load: ${f}`);
+           	process.exit(1);
+           }
+          }
+          EOF
+          loader=node
+          if command -v bun >/dev/null 2>&1; then loader=bun; fi
+          "$loader" "$RUNNER_TEMP/smoke-addons.js" \
+            "$PWD/packages/natives/native/pi_natives.linux-x64-baseline.node" \
+            "$PWD/packages/natives/native/pi_natives.linux-x64-modern.node"
+
+      - name: Runtime smoke test
+        id: smoke
+        run: bun run ci:test:smoke
+
+      - name: Focused tool-router tests
+        id: focused
+        run: bun test packages/coding-agent/test/tool-router.test.ts
+
+      - name: Full check
+        id: check
+        # check:ts surface (oxlint + oxfmt --check + per-package
+        # check:types): everything this TS-only feature touches. check:rs
+        # (nightly Rust toolchain) stays with upstream CI by design.
+        run: bun run ci:check:full
+
+      - name: Diff check
+        id: diffcheck
+        shell: bash
+        run: git diff --check "${{ steps.sync.outputs.before_sha }}..HEAD"
+
+      - name: Seal validated candidate
+        id: seal
+        # The gates above execute candidate code with a read-only token, but
+        # that code could still mutate the local HEAD/working tree. Prove the
+        # sealed candidate survived untouched; otherwise nothing publishable
+        # exists. Ignored/untracked helper files (native addons) are out of
+        # scope — no TRACKED file may differ.
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="${{ steps.sync.outputs.candidate_sha }}"
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          git diff --quiet "$EXPECTED" --
+          echo "seal_status=sealed" >> "$GITHUB_OUTPUT"
+
+      - name: Package validated candidate
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Authoritative value: the pre-execution seal, NOT a fresh rev-parse.
+          RESULT_SHA="${{ steps.sync.outputs.candidate_sha }}"
+          echo "result_sha=$RESULT_SHA" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/candidate"
+          {
+            echo "{"
+            echo "  \"before_sha\": \"${{ steps.sync.outputs.before_sha }}\","
+            echo "  \"upstream_sha\": \"${{ steps.sync.outputs.upstream_sha }}\","
+            echo "  \"feature_sha\": \"${{ steps.sync.outputs.feature_sha }}\","
+            echo "  \"result_sha\": \"$RESULT_SHA\","
+            echo "  \"merge_result\": \"${{ steps.sync.outputs.merge_result }}\""
+            echo "}"
+          } > "$RUNNER_TEMP/candidate/shas.json"
+          if [ "${{ steps.sync.outputs.merge_result }}" = "merged" ]; then
+            git update-ref refs/validate/candidate "$RESULT_SHA"
+            git bundle create "$RUNNER_TEMP/candidate/candidate.bundle" \
+              "^${{ steps.sync.outputs.before_sha }}" refs/validate/candidate
+          fi
+
+      - name: Upload candidate
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: jev-daily-candidate
+          path: ${{ runner.temp }}/candidate/
+          retention-days: 1
+
+      - name: Validation summary
+        if: always()
+        shell: bash
+        run: |
+          STATUS="UNKNOWN"
+          if [ "${{ steps.sync.outcome }}" != "success" ] && [ "${{ steps.sync.outputs.merge_result }}" = "conflict" ]; then
+            STATUS="MERGE_CONFLICT"
+          elif [ "${{ steps.sync.outcome }}" != "success" ]; then
+            STATUS="FEATURE_MISSING"
+          elif [ "${{ steps.install.outcome }}" != "success" ]; then
+            STATUS="DEPENDENCY_INSTALL_FAILED"
+          elif [ "${{ steps.addon.outcome }}" != "success" ]; then
+            STATUS="NATIVE_ADDON_FAILED"
+          elif [ "${{ steps.smoke.outcome }}" != "success" ]; then
+            STATUS="SMOKE_FAILED"
+          elif [ "${{ steps.focused.outcome }}" != "success" ]; then
+            STATUS="TESTS_FAILED"
+          elif [ "${{ steps.check.outcome }}" != "success" ]; then
+            STATUS="CHECKS_FAILED"
+          elif [ "${{ steps.diffcheck.outcome }}" != "success" ]; then
+            STATUS="DIFF_CHECK_FAILED"
+          elif [ "${{ steps.seal.outcome }}" != "success" ]; then
+            STATUS="CANDIDATE_INTEGRITY_FAILED"
+          elif [ "${{ steps.package.outcome }}" != "success" ]; then
+            STATUS="PACKAGE_FAILED"
+          elif [ "${{ steps.upload.outcome }}" != "success" ]; then
+            STATUS="ARTIFACT_UPLOAD_FAILED"
+          else
+            STATUS="VALIDATED"
+          fi
+          {
+            echo "## jev-daily sync — validation"
+            echo ""
+            echo "CURRENT_JEV_DAILY_SHA=${{ steps.sync.outputs.before_sha }}"
+            echo "UPSTREAM_SHA=${{ steps.sync.outputs.upstream_sha }}"
+            echo "FEATURE_SHA=${{ steps.sync.outputs.feature_sha }}"
+            echo "UPSTREAM_ALREADY_INCLUDED=${{ steps.sync.outputs.already_included }}"
+            echo "MERGE_RESULT=${{ steps.sync.outputs.merge_result }}"
+            echo "FEATURE_PRESENT=${{ steps.sync.outputs.feature_present }}"
+            echo "SMOKE_STATUS=${{ steps.smoke.outcome }}"
+            echo "FOCUSED_TEST_STATUS=${{ steps.focused.outcome }}"
+            echo "CHECK_STATUS=${{ steps.check.outcome }}"
+            echo "DIFF_CHECK_STATUS=${{ steps.diffcheck.outcome }}"
+            echo "CANDIDATE_SHA=${{ steps.sync.outputs.candidate_sha }}"
+            echo "CANDIDATE_SEAL_STATUS=${{ steps.seal.outputs.seal_status }}"
+            echo "RESULT_SHA=${{ steps.package.outputs.result_sha }}"
+            echo "VALIDATION_STATUS=$STATUS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Verify and push validated candidate
+    needs: validate
+    if: needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out jev-daily
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: jev-daily
+          fetch-depth: 0
+
+      - name: Download candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: jev-daily-candidate
+          path: ${{ runner.temp }}/candidate
+
+      - name: Verify candidate integrity
+        id: integrity
+        # Git plumbing only. No bun/npm/node/test/scripts run here, so no
+        # candidate code executes with the write token. Never pushes.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Authoritative values: validate job outputs, never the manifest.
+          EXPECTED_BEFORE="${{ needs.validate.outputs.before_sha }}"
+          EXPECTED_UPSTREAM="${{ needs.validate.outputs.upstream_sha }}"
+          EXPECTED_FEATURE="${{ needs.validate.outputs.feature_sha }}"
+          EXPECTED_CANDIDATE="${{ needs.validate.outputs.candidate_sha }}"
+          MERGED="${{ needs.validate.outputs.merge_result }}"
+          {
+            echo "before_sha=$EXPECTED_BEFORE"
+            echo "result_sha=$EXPECTED_CANDIDATE"
+            echo "merged=$MERGED"
+          } >> "$GITHUB_OUTPUT"
+          # The manifest is transported evidence: cross-check every field.
+          MANIFEST="${{ runner.temp }}/candidate/shas.json"
+          [ "$(jq -r .before_sha "$MANIFEST")" = "$EXPECTED_BEFORE" ]
+          [ "$(jq -r .upstream_sha "$MANIFEST")" = "$EXPECTED_UPSTREAM" ]
+          [ "$(jq -r .feature_sha "$MANIFEST")" = "$EXPECTED_FEATURE" ]
+          [ "$(jq -r .result_sha "$MANIFEST")" = "$EXPECTED_CANDIDATE" ]
+          git remote add upstream https://github.com/can1357/oh-my-pi.git 2>/dev/null || true
+          git fetch origin jev-daily
+          git fetch upstream main
+          # The remote must not have moved since validation: fail closed.
+          if [ "$(git rev-parse origin/jev-daily)" != "$EXPECTED_BEFORE" ]; then
+            echo "integrity=remote-moved" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$MERGED" != "merged" ]; then
+            # Healthy no-op: prove it instead of pushing.
+            git merge-base --is-ancestor "$EXPECTED_UPSTREAM" origin/jev-daily
+            git merge-base --is-ancestor "$EXPECTED_FEATURE" origin/jev-daily
+            echo "integrity=noop-verified" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BUNDLE="${{ runner.temp }}/candidate/candidate.bundle"
+          test -f "$BUNDLE"
+          git bundle verify "$BUNDLE"
+          git fetch "$BUNDLE" refs/validate/candidate:refs/validate/candidate
+          CANDIDATE="$(git rev-parse refs/validate/candidate)"
+          [ "$CANDIDATE" = "$EXPECTED_CANDIDATE" ]
+          git merge-base --is-ancestor "$EXPECTED_BEFORE" "$CANDIDATE"
+          git merge-base --is-ancestor "$EXPECTED_UPSTREAM" "$CANDIDATE"
+          git merge-base --is-ancestor "$EXPECTED_FEATURE" "$CANDIDATE"
+          if [ "$EXPECTED_CANDIDATE" = "$EXPECTED_UPSTREAM" ]; then
+            git merge-base --is-ancestor "$EXPECTED_BEFORE" "$EXPECTED_CANDIDATE"
+          else
+            [ "$(git rev-parse "$CANDIDATE^1")" = "$EXPECTED_BEFORE" ]
+            [ "$(git rev-parse "$CANDIDATE^2")" = "$EXPECTED_UPSTREAM" ]
+          fi
+          echo "integrity=verified" >> "$GITHUB_OUTPUT"
+
+      - name: Push validated candidate
+        id: push
+        if: >
+          steps.integrity.outcome == 'success' &&
+          steps.integrity.outputs.merged == 'merged'
+        shell: bash
+        # Pushes the exact validated SHA and nothing else. A concurrent
+        # remote advance rejects and fails closed. Never force-push.
+        run: |
+          set -euo pipefail
+          git push origin "${{ steps.integrity.outputs.result_sha }}":jev-daily
+          echo "pushed=yes" >> "$GITHUB_OUTPUT"
+
+      - name: Publication summary
+        if: always()
+        shell: bash
+        run: |
+          SYNC="UNKNOWN"
+          if [ "${{ steps.integrity.outcome }}" != "success" ]; then
+            SYNC="CANDIDATE_INTEGRITY_FAILED"
+          elif [ "${{ steps.integrity.outputs.merged }}" != "merged" ]; then
+            SYNC="UP_TO_DATE_NOOP_AND_VALIDATED"
+          elif [ "${{ steps.push.outcome }}" != "success" ]; then
+            SYNC="PUSH_REJECTED"
+          else
+            SYNC="UPDATED_AND_VALIDATED"
+          fi
+          READY="NO"
+          if [ "$SYNC" = "UPDATED_AND_VALIDATED" ] || [ "$SYNC" = "UP_TO_DATE_NOOP_AND_VALIDATED" ]; then READY="YES"; fi
+          {
+            echo "## jev-daily sync — publication"
+            echo ""
+            echo "CURRENT_JEV_DAILY_SHA=${{ steps.integrity.outputs.before_sha }}"
+            echo "UPSTREAM_SHA=${{ needs.validate.outputs.upstream_sha }}"
+            echo "FEATURE_SHA=${{ needs.validate.outputs.feature_sha }}"
+            echo "UPSTREAM_ALREADY_INCLUDED=${{ needs.validate.outputs.already_included }}"
+            echo "MERGE_RESULT=${{ needs.validate.outputs.merge_result }}"
+            echo "FEATURE_PRESENT=${{ needs.validate.outputs.feature_present }}"
+            echo "FOCUSED_TEST_STATUS=see validation summary"
+            echo "CHECK_STATUS=see validation summary"
+            echo "DIFF_CHECK_STATUS=see validation summary"
+            echo "RESULT_SHA=${{ steps.integrity.outputs.result_sha }}"
+            echo "PUSH_STATUS=${{ steps.push.outcome }}"
+            echo "SYNC_STATUS=$SYNC"
+            echo "READY_TO_INSTALL_UPDATED_VERSION=$READY"
+          } >> "$GITHUB_STEP_SUMMARY"
