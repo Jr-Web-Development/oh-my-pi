@@ -19,7 +19,11 @@ import type { ToolChoice } from "@oh-my-pi/pi-ai/types";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { logger } from "@oh-my-pi/pi-utils";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getDefault } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+import {
+	cfgToolRouterEnabled,
+	cfgToolRouterMinConfidence,
+	cfgToolRouterTimeoutMs,
+} from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { createSettingsAwareStreamFn } from "@oh-my-pi/pi-coding-agent/session/settings-stream-fn";
 import { TOOL_ROUTER_NO_TOOL } from "@oh-my-pi/pi-coding-agent/session/tool-router";
 
@@ -101,16 +105,38 @@ async function routedOptions(
 	callerOptions?: SimpleStreamOptions,
 ): Promise<{ calls: Array<{ options?: SimpleStreamOptions }>; judgeCalls: number }> {
 	const { fn: base, calls } = captureBase();
-	const wrapped = createSettingsAwareStreamFn(settings, base, { getJudge: () => probe.judge, scope: "main" });
+	const wrapped = createSettingsAwareStreamFn(settings, base, undefined, {
+		getJudge: () => probe.judge,
+		scope: "main",
+	});
 	await wrapped(stubModel, context, callerOptions);
 	return { calls, judgeCalls: probe.calls.length };
 }
 
 describe("toolRouter settings defaults", () => {
 	it("stays disabled with conservative bounded defaults", () => {
-		expect(getDefault("toolRouter.enabled")).toBe(false);
-		expect(getDefault("toolRouter.minConfidence")).toBe(0.7);
-		expect(getDefault("toolRouter.timeoutMs")).toBe(1500);
+		expect(cfgToolRouterEnabled.default).toBe(false);
+		expect(cfgToolRouterMinConfidence.default).toBe(0.7);
+		expect(cfgToolRouterTimeoutMs.default).toBe(1500);
+	});
+
+	it("slowModeContext and toolRouter coexist on separate arguments", async () => {
+		const probe = stubJudge(async () => choiceResult("read", 0.9));
+		const { fn: base, calls } = captureBase();
+		const wrapped = createSettingsAwareStreamFn(
+			enabledSettings(),
+			base,
+			{},
+			{
+				getJudge: () => probe.judge,
+				scope: "main",
+			},
+		);
+
+		await wrapped(stubModel, readWriteContext(), undefined);
+
+		expect(probe.calls.length).toBe(1);
+		expect(calls[0]?.options?.toolChoice).toEqual({ type: "function", name: "read" });
 	});
 });
 
@@ -118,7 +144,7 @@ describe("tool router guards", () => {
 	it("disabled: zero judge calls, original options, stays synchronous", () => {
 		const probe = stubJudge(async () => choiceResult("read", 0.99));
 		const { fn: base, calls } = captureBase();
-		const wrapped = createSettingsAwareStreamFn(Settings.isolated({}), base, {
+		const wrapped = createSettingsAwareStreamFn(Settings.isolated({}), base, undefined, {
 			getJudge: () => probe.judge,
 			scope: "main",
 		});
@@ -270,7 +296,7 @@ describe("tool router decisions", () => {
 	it("judge side requests do not re-enter the router", async () => {
 		const { fn: base, calls } = captureBase();
 		let innerCalls = 0;
-		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, {
+		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, undefined, {
 			scope: "main",
 			getJudge: () =>
 				({
@@ -364,7 +390,7 @@ describe("tool router observability", () => {
 		const spy = vi.spyOn(logger, "debug").mockImplementation(() => {});
 		const probe = stubJudge(async () => choiceResult("read", 0.9));
 		const { fn: base, calls } = captureBase();
-		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, {
+		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, undefined, {
 			getJudge: () => probe.judge,
 			scope: "main",
 		});
@@ -396,7 +422,7 @@ describe("tool router observability", () => {
 		async scope => {
 			const probe = stubJudge(async () => choiceResult("read", 0.99));
 			const { fn: base, calls } = captureBase();
-			const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, {
+			const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, undefined, {
 				getJudge: () => probe.judge,
 				scope,
 			});
@@ -412,7 +438,7 @@ describe("tool router observability", () => {
 	it("main fallback across providers reuses the turn decision without a second judge call", async () => {
 		const probe = stubJudge(async () => choiceResult("read", 0.9));
 		const { fn: base, calls } = captureBase();
-		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, {
+		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, undefined, {
 			getJudge: () => probe.judge,
 			scope: "main",
 		});
@@ -469,7 +495,7 @@ describe("tool router turn gate: one jev decision per user turn", () => {
 	it("post-tool follow-up does not re-judge and does not re-force the tool", async () => {
 		const probe = stubJudge(async () => choiceResult("read", 0.9));
 		const { fn: base, calls } = captureBase();
-		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, {
+		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, undefined, {
 			getJudge: () => probe.judge,
 			scope: "main",
 		});
@@ -486,7 +512,7 @@ describe("tool router turn gate: one jev decision per user turn", () => {
 	it("a new user turn re-arms the router", async () => {
 		const probe = stubJudge(async callIndex => choiceResult(callIndex === 1 ? "read" : "write", 0.9));
 		const { fn: base, calls } = captureBase();
-		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, {
+		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, undefined, {
 			getJudge: () => probe.judge,
 			scope: "main",
 		});
@@ -505,7 +531,7 @@ describe("tool router turn gate: one jev decision per user turn", () => {
 	it("none applies only to its own turn", async () => {
 		const probe = stubJudge(async callIndex => choiceResult(callIndex === 1 ? TOOL_ROUTER_NO_TOOL : "read", 0.9));
 		const { fn: base, calls } = captureBase();
-		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, {
+		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, undefined, {
 			getJudge: () => probe.judge,
 			scope: "main",
 		});
@@ -522,7 +548,7 @@ describe("tool router turn gate: one jev decision per user turn", () => {
 	it("low-confidence fail-open does not trigger a post-tool re-judge", async () => {
 		const probe = stubJudge(async () => choiceResult("read", 0.5));
 		const { fn: base, calls } = captureBase();
-		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, {
+		const wrapped = createSettingsAwareStreamFn(enabledSettings(), base, undefined, {
 			getJudge: () => probe.judge,
 			scope: "main",
 		});

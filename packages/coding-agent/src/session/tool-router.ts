@@ -15,9 +15,10 @@
  * No-recursion argument (structural, not a flag): Jev backends never pass
  * through this wrapper. {@link TypeSafeJudge} talks HTTP directly, and the
  * chat fallback (`chatTextBackend` in `packages/ai/src/judgment/chat.ts`)
- * calls core `completeSimple` -> `streamSimple` directly. This wrapper is only
- * composed in `sdk.ts` for the main/advisor/side-channel stream functions, so
- * a judgment side request cannot re-enter the router.
+ * calls core `completeSimple` -> `streamSimple` directly. The wrapper is
+ * composed per consumer in `sdk.ts` (`main`, `advisor`, `capture`,
+ * `side-channel`) but only the `main` scope is eligible for routing, so a
+ * judgment side request cannot re-enter the router.
  *
  * Fail-open contract: any guard trip, validation failure, error, or timeout
  * returns the caller's options object untouched.
@@ -25,14 +26,15 @@
 import type { ChoiceQuestion, Context, Judge, Model, SimpleStreamOptions, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import { cfgToolRouterEnabled, cfgToolRouterMinConfidence, cfgToolRouterTimeoutMs } from "../tools/settings";
 
 /** Choice label meaning "the request needs no tool; answer in prose". */
 export const TOOL_ROUTER_NO_TOOL = "no_tool_needed";
 
-/** Conservative default: minimum Jev confidence required to override the caller. */
-export const TOOL_ROUTER_DEFAULT_MIN_CONFIDENCE = 0.7;
-/** Conservative default: hard deadline for the Jev side request. */
-export const TOOL_ROUTER_DEFAULT_TIMEOUT_MS = 1500;
+/** Conservative default: mirrors the registered `toolRouter.minConfidence` default. */
+export const TOOL_ROUTER_DEFAULT_MIN_CONFIDENCE: number = cfgToolRouterMinConfidence.default;
+/** Conservative default: mirrors the registered `toolRouter.timeoutMs` default. */
+export const TOOL_ROUTER_DEFAULT_TIMEOUT_MS: number = cfgToolRouterTimeoutMs.default;
 /** Upper bound even a user-configured timeout cannot exceed. */
 export const TOOL_ROUTER_MAX_TIMEOUT_MS = 10_000;
 
@@ -262,7 +264,7 @@ export function decideToolRoute(
 ): ToolRouterOutcome | Promise<ToolRouterOutcome> {
 	const passthrough = (reason: string): ToolRouterOutcome => ({ options, routed: false, reason, latencyMs: 0 });
 
-	if (settings.get("toolRouter.enabled") !== true) return passthrough("disabled");
+	if (cfgToolRouterEnabled.get(settings) !== true) return passthrough("disabled");
 	// First POC routes the primary main loop only. Advisor, capture, and
 	// side-channel consumers take the base path with zero judge calls. An
 	// absent source predates scoped wiring and never routes either.
@@ -311,8 +313,8 @@ export function decideToolRoute(
 	const plan: RoutePlan = {
 		toolNames: tools.slice(0, MAX_TOOLS_IN_STATE).map(tool => tool.name),
 		intent,
-		timeoutMs: normalizeTimeoutMs(settings.get("toolRouter.timeoutMs")),
-		minConfidence: normalizeMinConfidence(settings.get("toolRouter.minConfidence")),
+		timeoutMs: normalizeTimeoutMs(cfgToolRouterTimeoutMs.get(settings)),
+		minConfidence: normalizeMinConfidence(cfgToolRouterMinConfidence.get(settings)),
 		judge,
 	};
 	return resolveRoute(model, context, options, plan, source.scope, turn, { fingerprint, toolResults });
