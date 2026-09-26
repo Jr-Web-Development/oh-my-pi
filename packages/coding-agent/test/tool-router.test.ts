@@ -341,6 +341,40 @@ describe("tool router decisions", () => {
 		expect(serialized).not.toContain("apiKey");
 		expect(serialized).not.toContain("Authorization");
 	});
+	it("advertises the native eval bridge as a programmatic multi-tool route", async () => {
+		const probe = stubJudge(async () => choiceResult("eval", 0.9));
+		const hiddenBridgeMarker =
+			`${"ordinary eval description ".repeat(30)}await tool.<name>(args) — session tool; args is its parameter object`;
+
+		await routedOptions(
+			enabledSettings(),
+			probe,
+			makeContext(
+				[
+					{ name: "eval", description: hiddenBridgeMarker },
+					{ name: "read", description: "Read one file from disk" },
+				],
+				"inspect many config files in parallel, aggregate the results, and return only the failures",
+			),
+		);
+
+		expect(probe.calls.length).toBe(1);
+		const questions = (probe.calls[0]?.questions ?? {}) as Record<
+			string,
+			{ type: string; instructions: string; criteria: Record<string, string | null> }
+		>;
+		const route = questions["route"];
+
+		expect(route?.instructions).toContain("programmatic multi-tool executor");
+		expect(route?.instructions).toContain("one simple operation");
+
+		const evalCriterion = route?.criteria["eval"] ?? "";
+		expect(evalCriterion).toContain("Programmatic multi-tool executor");
+		expect(evalCriterion).toContain("tool.<name>(args)");
+		expect(evalCriterion.length).toBeLessThanOrEqual(500);
+		expect(route?.criteria["read"]).toBe("Read one file from disk");
+	});
+
 });
 
 describe("tool router observability", () => {
