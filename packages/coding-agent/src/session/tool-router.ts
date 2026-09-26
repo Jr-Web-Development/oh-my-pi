@@ -87,10 +87,23 @@ const MAX_DESCRIPTION_CHARS = 500;
 /** Max tools described to Jev; bounds the judgment state size. */
 const MAX_TOOLS_IN_STATE = 64;
 
+/**
+ * The native eval bridge already supports programmatic tool calling through
+ * `tool.<name>(args)`. Its ordinary description is intentionally rich, but the
+ * bridge capability currently appears after the router's bounded description
+ * prefix. Surface a compact semantic hint only when the live eval description
+ * proves that bridge is actually available.
+ */
+const EVAL_PTC_MARKER = "tool.<name>(args)";
+const EVAL_PTC_ROUTER_HINT =
+	"Programmatic multi-tool executor: can call enabled session tools via tool.<name>(args) from JavaScript, using loops, conditions, filtering, aggregation, and parallel calls. Best for batch/repetitive/multi-tool work; use a direct tool for one simple operation.";
+
 const TOOL_ROUTE_INSTRUCTIONS =
 	"Decide which tool the assistant should call next, if any. Choose the single tool " +
 	"whose purpose matches the user's intent, or no_tool_needed when the intent is fully " +
-	"answerable in prose or no listed tool fits.";
+	"answerable in prose or no listed tool fits. Prefer a programmatic multi-tool executor " +
+	"for batch, repetitive, conditional, aggregation, or parallel work when it can call the " +
+	"other session tools itself; prefer the direct tool for one simple operation.";
 
 /** Rejection arrival past this deadline; the main request always proceeds. */
 class ToolRouterTimeoutError extends Error {
@@ -102,6 +115,17 @@ class ToolRouterTimeoutError extends Error {
 
 function truncate(text: string, max: number): string {
 	return text.length > max ? text.slice(0, max) : text;
+}
+
+function routerToolDescription(tool: { name: string; description?: string }): string | null {
+	const description = tool.description?.trim();
+	if (!description) return null;
+
+	if (tool.name === "eval" && description.includes(EVAL_PTC_MARKER)) {
+		return truncate(`${EVAL_PTC_ROUTER_HINT}\n${description}`, MAX_DESCRIPTION_CHARS);
+	}
+
+	return truncate(description, MAX_DESCRIPTION_CHARS);
 }
 
 function contentText(content: string | Array<{ type: string; text?: string }>): string {
@@ -356,8 +380,7 @@ async function resolveRoute(
 
 	const criteria: Record<string, string | null> = {};
 	for (const tool of (context.tools ?? []).slice(0, MAX_TOOLS_IN_STATE)) {
-		const description = tool.description?.trim();
-		criteria[tool.name] = description ? truncate(description, MAX_DESCRIPTION_CHARS) : null;
+		criteria[tool.name] = routerToolDescription(tool);
 	}
 	criteria[TOOL_ROUTER_NO_TOOL] = "No tool fits, or the intent is fully answerable in prose without tools.";
 	const question: ChoiceQuestion<string> = {
