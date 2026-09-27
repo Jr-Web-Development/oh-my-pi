@@ -25,6 +25,7 @@ import type { InteractiveModeContext } from "../../modes/types";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
+import { PendingToolRoute, type ToolRouterDecisionEvent } from "../../session/tool-router-events";
 import {
 	isSilentAbort,
 	isUserInvokedSkillPrompt,
@@ -189,6 +190,9 @@ export class EventController {
 	#restorePinnedErrorInline = true;
 	#retrySupersededAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#retrySupersededAssistantQueue: AssistantMessageComponent[] = [];
+	// Display-only applied Jev route for the current turn; consumed by the row
+	// creation of the forced tool (see #annotateRoutedTool).
+	#pendingToolRoute = new PendingToolRoute();
 	// Set when `auto_retry_start` fires and cleared by `auto_retry_end` (both
 	// outcomes) — true for exactly the window a retry is outstanding. Gates
 	// `sendErrorNotification`: the wire-level `agent_end` for a retryable
@@ -372,6 +376,16 @@ export class EventController {
 		this.#scheduleIdleRecap();
 	}
 
+	/**
+	 * Record the applied Jev route for the current turn. The indicator is not
+	 * printed here: it lands immediately before the row of the tool the router
+	 * forced, which can only be known at tool-row creation (see
+	 * #annotateRoutedTool).
+	 */
+	noteJevRoute(decision: ToolRouterDecisionEvent): void {
+		this.#pendingToolRoute.note(decision);
+	}
+
 	dispose(): void {
 		this.#detachToolApprovalPreviewWaiter?.();
 		this.#detachToolApprovalPreviewWaiter = undefined;
@@ -396,6 +410,24 @@ export class EventController {
 	#resetReadGroup(): void {
 		this.#lastReadGroup?.finalize();
 		this.#lastReadGroup = undefined;
+	}
+
+	/**
+	 * Print the applied-route indicator immediately before a tool row that is
+	 * about to be added, when (and only when) `toolName` is the tool the router
+	 * forced. The marker is consumed either way: a tool the model chose itself,
+	 * or a row that already exists, must never be annotated (an indicator printed
+	 * after its row would lie about what the row is).
+	 *
+	 * Called from every row-creation path in the order they can run: the
+	 * streaming creation in the message-update handler (the common case — the row
+	 * exists before `tool_execution_start`) and, as a fallback, the
+	 * tool-execution-start handler for a call that streamed no row.
+	 */
+	#annotateRoutedTool(toolName: string): void {
+		const decision = this.#pendingToolRoute.consume(toolName);
+		if (decision === undefined) return;
+		this.ctx.showStatus(`◆ JEV → ${toolName} · ${Math.round(decision.confidence * 100)}%`);
 	}
 	/** Freeze foreground tool cards once no live agent turn can complete them. */
 	#sealAbandonedForegroundTools(): void {
@@ -939,6 +971,9 @@ export class EventController {
 		this.#seedHeldCompletionsFromPendingResults();
 		this.#resolveDisplaceableTodo();
 		this.#lastAssistantComponent = undefined;
+		// A new turn re-routes: a decision published by a previous inference or
+		// turn must never annotate this turn's first row.
+		this.#pendingToolRoute.clear();
 		// Restore terminal errors in transcript history when their banner clears.
 		// Recoverable empty-output attempts are discarded by session recovery and
 		// must stay hidden rather than resurfacing as a stale inline error.
@@ -1361,6 +1396,9 @@ export class EventController {
 							existing.updateArgs(content.arguments, content.id);
 						} else if (!this.#toolTimelineComponents.has(content.id)) {
 							// A completed read remains in the timeline after leaving pendingTools.
+							// The group row is created by `#getReadGroup()` below, so this is
+							// the last point that can still place the route indicator above it.
+							this.#annotateRoutedTool(renderToolName);
 							this.#resolveDisplaceablePoll(renderToolName);
 							this.#trackReadToolCall(content.id, content.arguments);
 							const group = this.#getReadGroup();
@@ -1401,6 +1439,11 @@ export class EventController {
 				// check the next cumulative update would recreate a card for a call
 				// that already finished, permanently pending.
 				if (!this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id)) {
+					// The row is created here, while the message is still streaming,
+					// so this is where an applied router route must be printed — it
+					// must land above this row, and by `tool_execution_start` the row
+					// already exists.
+					this.#annotateRoutedTool(renderToolName);
 					this.#resolveDisplaceablePoll(renderToolName);
 					this.#resetReadGroup();
 					const component = new ToolExecutionComponent(
@@ -1695,6 +1738,10 @@ export class EventController {
 			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args)) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				if (!this.#toolTimelineComponents.has(event.toolCallId)) {
+					// The read group is created — and added to the transcript — on
+					// first use, so the indicator only fits when this call creates
+					// it. An existing group's row predates this call: skip.
+					if (this.#lastReadGroup === undefined) this.#annotateRoutedTool(event.toolName);
 					const group = this.#getReadGroup();
 					group.updateArgs(event.args, event.toolCallId);
 					this.ctx.pendingTools.set(event.toolCallId, group);
@@ -1728,6 +1775,7 @@ export class EventController {
 			component.setExecutionStarted(event.toolCallId);
 			this.#executionStartedCallIds.add(event.toolCallId);
 			component.setExpanded(this.ctx.toolOutputExpanded);
+			this.#annotateRoutedTool(event.toolName);
 			this.ctx.chatContainer.addChild(component);
 			this.ctx.pendingTools.set(event.toolCallId, component);
 			this.#toolTimelineComponents.set(event.toolCallId, component);

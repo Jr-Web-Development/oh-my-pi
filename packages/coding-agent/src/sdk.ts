@@ -205,6 +205,7 @@ import {
 	type SettingsStreamSlowModeContext,
 } from "./session/settings-stream-fn";
 import type { ToolRouterScope } from "./session/tool-router";
+import { TOOL_ROUTER_DECISION_EVENT_CHANNEL, toolRouterDecisionEvent } from "./session/tool-router-events";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
 import { createSnapcompactSavingsRecorder } from "./session/snapcompact-savings-journal";
 import { createSpeculativeToolExecutionConfig } from "./speculation/host";
@@ -4046,10 +4047,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			wrapStreamFnWithBlobUrlFallback(
 				wrapStreamFnWithProviderConcurrency(
 					settings,
-					createSettingsAwareStreamFn(settings, undefined, slowModeContext, {
-						getJudge: () => toolRouterJudge,
-						scope,
-					}),
+					createSettingsAwareStreamFn(
+						settings,
+						undefined,
+						slowModeContext,
+						{
+							getJudge: () => toolRouterJudge,
+							scope,
+						},
+						// Display-only: publish the applied route (never passthrough,
+						// never the `none` route) so the TUI can annotate the forced
+						// tool's row. The gate lives in tool-router-events.ts.
+						outcome => {
+							const decision = toolRouterDecisionEvent(outcome);
+							if (decision !== undefined) eventBus.emit(TOOL_ROUTER_DECISION_EVENT_CHANNEL, decision);
+						},
+					),
 				),
 				() => blobBroker.current,
 			);

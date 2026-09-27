@@ -21,7 +21,12 @@ import { serverSideFallbackModels } from "@oh-my-pi/pi-catalog/compat/server-sid
 import type { Encoding } from "@oh-my-pi/pi-natives";
 import type { Settings } from "../config/settings";
 import { type AnthropicSlowModeLanes, anthropicSlowModeLanes } from "./anthropic-slow-mode";
-import { decideToolRoute, createToolRouterTurnState, type ToolRouterSource } from "./tool-router";
+import {
+	decideToolRoute,
+	createToolRouterTurnState,
+	type ToolRouterOutcome,
+	type ToolRouterSource,
+} from "./tool-router";
 
 import {
 	cfgModelLoopGuardCheckAssistantContent,
@@ -80,13 +85,17 @@ export interface SettingsStreamSlowModeContext {
  * the native Jev tool router before `base` (i.e. before `mapOptionsForApi`
  * and provider serialization). The router only emits generic `ToolChoice`
  * values and fail-opens to the merged options, so omitting `toolRouter`
- * preserves the exact historical behavior.
+ * preserves the exact historical behavior. `onRouteDecision`, when provided,
+ * observes that outcome once per inference for display; the observer is
+ * optional and never receives the options, so it cannot alter which options
+ * reach `base`.
  */
 export function createSettingsAwareStreamFn(
 	settings: Settings,
 	base: StreamFn = streamSimple,
 	slowModeContext?: SettingsStreamSlowModeContext,
 	toolRouter?: ToolRouterSource,
+	onRouteDecision?: (outcome: ToolRouterOutcome) => void,
 ): StreamFn {
 	// One tokenizer per encoding, so per-message counts are reused across requests.
 	const tokenizers = new Map<Encoding | null, Tokenizer>();
@@ -175,7 +184,12 @@ export function createSettingsAwareStreamFn(
 		};
 		if (toolRouter === undefined) return base(model, context, merged);
 		const outcome = decideToolRoute(model, context, merged, toolRouter, settings, turn);
-		if (outcome instanceof Promise) return outcome.then(resolved => base(model, context, resolved.options));
+		if (outcome instanceof Promise)
+			return outcome.then(resolved => {
+				onRouteDecision?.(resolved);
+				return base(model, context, resolved.options);
+			});
+		onRouteDecision?.(outcome);
 		return base(model, context, outcome.options);
 	};
 }
