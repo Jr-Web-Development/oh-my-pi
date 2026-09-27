@@ -343,8 +343,7 @@ describe("tool router decisions", () => {
 	});
 	it("advertises the native eval bridge as a programmatic multi-tool route", async () => {
 		const probe = stubJudge(async () => choiceResult("eval", 0.9));
-		const hiddenBridgeMarker =
-			`${"ordinary eval description ".repeat(30)}await tool.<name>(args) — session tool; args is its parameter object`;
+		const hiddenBridgeMarker = `${"ordinary eval description ".repeat(30)}await tool.<name>(args) — session tool; args is its parameter object`;
 
 		await routedOptions(
 			enabledSettings(),
@@ -374,7 +373,6 @@ describe("tool router decisions", () => {
 		expect(evalCriterion.length).toBeLessThanOrEqual(500);
 		expect(route?.criteria["read"]).toBe("Read one file from disk");
 	});
-
 });
 
 describe("tool router observability", () => {
