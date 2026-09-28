@@ -127,7 +127,7 @@ import {
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
-import { resolveJudge } from "./judgment";
+import { resolveJudge, sharedJudgmentCache } from "./judgment";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
 import { setSharedLspEnabled } from "./lsp/client";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
@@ -4039,7 +4039,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// capture, and side-channel consumers take the base path with zero
 		// judge calls. The provider concurrency semaphores are module-shared,
 		// so per-consumer pipelines do not widen per-provider in-flight caps.
-		const toolRouterJudge = resolveJudge({ settings, registry: modelRegistry, sessionId: providerSessionId });
+		//
+		// `purpose` labels the judgment for the ledger and telemetry spans. The
+		// native answer cache keys on the canonical judgment state *and* the full
+		// question (name, type, instructions, criteria), and the router's criteria
+		// carry every candidate tool name and description, so a repeat of the same
+		// intent text under a different tool roster is a different key — a cached
+		// answer can never stand in for a roster it was not decided against. The
+		// router applies its own confidence threshold, timeout, fail-open and
+		// per-turn reuse outside the judge, unchanged by a hit.
+		const toolRouterJudge = resolveJudge({
+			settings,
+			registry: modelRegistry,
+			sessionId: providerSessionId,
+			purpose: "tool-router",
+			cache: sharedJudgmentCache(),
+		});
 		const slowModeContext: SettingsStreamSlowModeContext = {
 			canAutoAccept: streamModel =>
 				anthropicSlowModeHasNoSiblingHeadroom(modelRegistry.authStorage, streamModel, session?.sessionId),
