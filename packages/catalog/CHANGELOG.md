@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [18.4.0] - 2026-09-28
+
+### Fixed
+
+- Corrected Cerebras model pricing so cached input tokens are charged at the model’s input rate, consistent with Cerebras billing.
+
 ## [18.3.5] - 2026-09-27
 
 ### Added

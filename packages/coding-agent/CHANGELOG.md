@@ -2,15 +2,21 @@
 
 ## [Unreleased]
 
+## [18.4.0] - 2026-09-28
+
 ### Added
 
 - Added a `telemetry.otlpExportEnabled` setting (`/settings` → Providers → Privacy) that stops OMP from exporting OTLP traces, logs, and metrics even when `OTEL_*` endpoints are set in its environment; export stays enabled by default ([#13444](https://github.com/can1357/oh-my-pi/pull/13444) by [@krizh-p](https://github.com/krizh-p))
 - Added a short `◆ JEV → <tool> · <pct>%` line above the tool call the Jev tool router forced, so an applied route is visible in the transcript without reading logs; a provider retry or fallback re-publishes the same provenance
 - Added standalone `◇ JEV · …` status lines for a turn where the Jev router did not force a tool — an unapplied selection (`◇ JEV · eval · 62% · passthrough`), the prose route (`◇ JEV · none · 82%`), or a failed judge call (`◇ JEV · timeout`, `◇ JEV · judge-error`) — without ever marking a tool the model chose itself, and with guards that never consulted Jev staying silent
+- Added the `telemetry.otlpExportEnabled` setting under Settings → Providers → Privacy to disable OTLP trace, log, and metric export even when `OTEL_*` endpoints are configured; exporting remains enabled by default.
+- Added a first-launch warning when Python evaluation is enabled but no working Python interpreter is available, with guidance for configuring `python.interpreter` and checking the installation with `omp setup python --check`.
 
 ### Changed
 
-- The `eval` tool description now notes that the kernel may be shared with the parent session and concurrent `task` subagents ([#13521](https://github.com/can1357/oh-my-pi/pull/13521) by [@radkawar](https://github.com/radkawar))
+- Updated `omp stats` and `/stats` to open the redesigned dashboard immediately while session data synchronizes in the background with live progress; `--json` and `--summary` continue to synchronize before producing output.
+- Replaced the stats dashboard’s Behavior page with a Frustration page that can classify messages using the `judge` model role, showing an estimated cost before analysis and recording `/stats` spending in the current session.
+- Clarified the `eval` tool documentation to explain that its kernel may be shared with the parent session and concurrent task subagents.
 
 ### Fixed
 
@@ -20,6 +26,24 @@
 - Fixed `omp update` and other one-shot commands on Windows printing "ended before completing" and exiting 1 after they had actually completed ([#13470](https://github.com/can1357/oh-my-pi/issues/13470))
 - Fixed `omp update` on Windows printing "ended before completing: the event loop drained" and exiting 1 when no `~/.npmrc` or `~/.bunfig.toml` exists ([#13470](https://github.com/can1357/oh-my-pi/issues/13470))
 - Fixed `wait` with no owned background jobs blocking silently for up to 30 minutes while its parent or a peer kept running; it now returns after a 5-second window that grows to 5 minutes on repeated waits and names who is still running ([#13513](https://github.com/can1357/oh-my-pi/issues/13513), [#13516](https://github.com/can1357/oh-my-pi/pull/13516) by [@H4vC](https://github.com/H4vC))
+- Fixed `/tree` reopening saved Ask results instead of navigating past them when an optional preview was saved as `null`.
+- Fixed the legacy `createGrepTool()` API when searching with both a file path and a `glob` filter.
+- Improved task and subagent reliability: eligible saved usage resets are now redeemed automatically when polling is throttled or transient failures occur, concurrent tasks share confirmed resets, headless subagents retain assignments across session transitions, tagged `^model` agents are available to nested subagents, and `wait` returns promptly with information about still-running work when no owned jobs are available.
+- Fixed SDK requests using `ApiKeyResolver` to wait for a nearby healthy credential when a drained account’s quota block is about to expire, instead of immediately failing with a multi-hour quota error.
+- Fixed Anthropic requests failing after native compaction when experimental context notes were enabled.
+- Fixed Windows path handling for 8.3 short paths, including project-directory detection and home-directory display in status, tool labels, and errors.
+- Fixed `edit` `PUT >N` producing syntactically invalid code when inserting shallower constructs near closing braces.
+- Fixed Windows one-shot commands, including `omp update`, incorrectly reporting successful completion as an error; also fixed this behavior when no user npm or Bun configuration file exists.
+- Fixed missing judge token counts corrupting session usage totals and displaying `$NaN`.
+- Fixed Cursor sessions under-reporting token usage and cost, compacting based on the wrong context measurement, and applying shell-command timeouts in the wrong units.
+- Updated goal mode to wait for user input when all remaining todos are blocked instead of repeatedly requesting approval.
+- Fixed `pi-background-tasks` 2.6.0 and later failing to load due to a missing legacy `pi-ai` compatibility export.
+- Fixed blob broker requests when `PI_PROXY` is configured.
+- Fixed `generate_image` reporting the catalog model instead of the image model actually used by the ChatGPT/Codex backend; saved image metadata now reflects the provider-returned size and quality.
+- Fixed fast-model fallback selection so it no longer chooses Gemini or MiniMax models when no `smol` role is configured.
+- Fixed extension tool renderers using upstream pi’s `renderCall(args, theme, context)` signature failing to render.
+- Fixed Nix flake and NixOS module builds failing because the native package version stamp was not recognized.
+- Fixed Nix dependency-lock checks failing after obsolete stats chart dependencies were removed.
 
 ## [18.3.5] - 2026-09-27
 
@@ -1784,71 +1808,4 @@
 - Accelerated SHA-2 and SHA-3 checksums on supported ARM64 hardware.
 - Fixed large MCP tool payloads being stored redundantly on disk.
 
-## [18.0.4] - 2026-08-24
-
-### Added
-
-- Added the `omp git` command (and `/git` slash command): an interactive, fullscreen repository TUI featuring a split/inline/hunk diff viewer with minimap scrollbar, syntax highlighting, a staging sidebar with line-level staging, commit composer with amend support, and author avatars. Supports keyboard navigation, full mouse interaction, and pinning views to specific commits via `omp git <revision>`.
-- Overhauled the `/extensions` Extension Control Center into a fullscreen alternate-screen dashboard with mouse support, tab navigation, unified inspector views across extension types, live MCP connection management, and expandable details (`Ctrl+O`).
-- Added support for live syntax highlighting in streaming markdown code blocks.
-- Added an immediately editable startup composer for interactive launches, preserving drafts typed while session initialization is in progress.
-
-### Changed
-
-- Improved streaming markdown and thinking block rendering performance on long sessions by batching token updates and eliminating redundant re-processing.
-- Optimized streaming edit verification and session restoration for large files and history-heavy sessions.
-
-### Fixed
-
-- Fixed invalid streamed edit patches occasionally reaching the edit tool instead of being stopped early.
-- Fixed `!` shell commands on zsh/fish by running them inside a real PTY, resolving terminal option errors and preserving ANSI color formatting.
-- Fixed transcript layout corruption and viewport compression caused by interrupted streams, empty blocks, or collapsed wrapped diff lines.
-- Fixed transcript scrollback loss where output below sticky cards (such as hub-wait or todo) failed to commit to terminal history.
-- Improved HTTP 413 error handling: accurately distinguish between true token-context overflows and provider byte/media budget limits, persist terminal errors across sessions, and enable proper fallback-chain model switching.
-- Fixed discovery-backed session models failing to restore when resuming sessions with `omp --resume` or `--continue`.
-- Fixed browser tool initial launch timeouts on slow or cold host environments.
-- Fixed eval runtime probes hanging on Windows due to inherited stdin handles.
-- Fixed Claude models replaying partial thinking blocks as conversation text when interrupted mid-turn.
-- Fixed image request failures with Kimi Code and Moonshot models by ensuring inline base64 image delivery.
-- Fixed SQLite WAL-mode databases without sidecars failing to open in the Read tool.
-- Fixed pasted image thumbnail rendering in the composer attachment preview.
-- Fixed Linux startup event loop delays caused by legacy extension cache fsync churn.
-- Fixed subagent advisors abandoning reviews on the final yield turn during session teardown.
-- Fixed `/todo` expand/collapse commands and corrected `/shake thinking` reporting.
-
-## [18.0.3] - 2026-08-23
-
-### Added
-
-- Added opt-in edit auto-repair (`edit.autoRepair.enabled`): when an edit breaks a file's AST parse, the smol model repairs the broken region in place — validated by re-parse, revert-rejected, and surfaced as a diff in the tool result — instead of only warning.
-
-### Fixed
-
-- Resolved cursor drift and text duplication caused by overlapping or out-of-bounds spelling ranges
-- Squeezed transcript tool rows no longer render as a bare unstyled `╭─ Hub` frame: a squeezed block keeps its real render whenever it fits the allocated rows, and blocks that genuinely overflow fold to a themed frame that names the tool's activity (e.g. `Hub · send → Main`).
-- Python/Ruby/Julia eval cells that hit their wall-clock timeout during a `parallel()`/`agent()`/`tool.*` fan-out no longer get their kernel force-killed (losing all session state): the timeout now aborts in-flight bridge calls so the runner unwinds as a clean KeyboardInterrupt and the kernel survives.
-- Multi-select ask options whose labels end in `(Recommended)` now show their checked state and avoid duplicate recommendation suffixes ([#9452](https://github.com/can1357/oh-my-pi/issues/9452)).
-
-## [18.0.2] - 2026-08-23
-
-### Added
-
-- Added update channels: `omp update --canary` installs canary prereleases from the npm `canary` dist-tag and `omp update --stable` switches back; the chosen channel persists and drives the startup update check.
-
-### Changed
-
-- Unexpected Stops now offers None, Mechanical (default), and Smart modes; Smart adds small-model classification to recover text-only stops.
-
-### Fixed
-
-- Fixed crash during update output when theme configuration is missing
-- Fixed flickering typo undercurls while typing by projecting state during revalidation
-- Fixed self-update on Windows leaving the `omp` command missing or stuck on the previous version when package-manager reinstalls fail on running files
-- Ctrl+T now toggles every thinking block in the transcript, including blocks already retired to terminal history ([#9440](https://github.com/can1357/oh-my-pi/issues/9440)).
-- Copilot Grok 4.6 Responses streams that repeatedly close after thinking now stop after one same-model retry instead of consuming the full retry budget ([#9427](https://github.com/can1357/oh-my-pi/issues/9427)).
-- `/mcp test` now reports cancellation immediately when Esc is pressed during a slow config lookup, instead of staying suspended until the read settles ([#9419](https://github.com/can1357/oh-my-pi/issues/9419)).
-- Fixed remote browser relay endpoints advertising a client-local CDP WebSocket URL: `/json/version` now reflects a valid request `Host` and falls back to the relay's loopback address when it is absent or unusable.
-- Restored red/green and syntax highlighting in edit-tool result bodies ([#9439](https://github.com/can1357/oh-my-pi/issues/9439)).
-- Fixed goal mode failing to start (`No such tool: xd://goal`) when `goal.enabled` was turned on after the session had already started; the `goal` tool is now registered lazily on goal-mode entry ([#9444](https://github.com/can1357/oh-my-pi/issues/9444)).
-
-Older entries are archived in [packages/coding-agent/CHANGELOG.md@d95ba9ea5e83](https://github.com/can1357/oh-my-pi/blob/d95ba9ea5e8370e1cc0e7fc83cef7c7db862b543/packages/coding-agent/CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@dfbf3cc34eeb](https://github.com/can1357/oh-my-pi/blob/dfbf3cc34eeb5653580f51bfbcae558a9840f697/packages/coding-agent/CHANGELOG.md).
