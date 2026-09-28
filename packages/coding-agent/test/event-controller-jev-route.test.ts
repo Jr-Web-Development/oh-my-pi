@@ -19,7 +19,10 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { ToolRouterDecisionEvent } from "@oh-my-pi/pi-coding-agent/session/tool-router-events";
+import type {
+	ToolRouterAppliedRoute,
+	ToolRouterStatusRoute,
+} from "@oh-my-pi/pi-coding-agent/session/tool-router-events";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
@@ -86,8 +89,15 @@ function readCall(id: string): ToolCall {
 	return toolCall(id, "read", { path: "src/modes/controllers/event-controller.ts" });
 }
 
-const READ_DECISION: ToolRouterDecisionEvent = { tool: "read", confidence: 0.98, reason: "named-tool" };
-const BASH_DECISION: ToolRouterDecisionEvent = { tool: "bash", confidence: 0.98, reason: "named-tool" };
+const READ_DECISION: ToolRouterAppliedRoute = { kind: "applied", tool: "read", confidence: 0.98, reason: "named-tool" };
+const BASH_DECISION: ToolRouterAppliedRoute = { kind: "applied", tool: "bash", confidence: 0.98, reason: "named-tool" };
+const LOW_CONFIDENCE: ToolRouterStatusRoute = {
+	kind: "advisory",
+	choice: "eval",
+	confidence: 0.62,
+	reason: "low-confidence",
+};
+const PROSE_ROUTE: ToolRouterStatusRoute = { kind: "none", confidence: 0.82, reason: "none" };
 
 interface Fixture {
 	readonly controller: EventController;
@@ -130,23 +140,24 @@ beforeAll(async () => {
 	await initTheme(false);
 });
 
+// Shared by both suites: the message-update path reads live settings.
+beforeEach(async () => {
+	resetSettingsForTest();
+	await Settings.init({ inMemory: true, overrides: { "display.smoothStreaming": false } });
+});
+
+afterEach(() => {
+	resetSettingsForTest();
+});
+
 describe("EventController Jev route indicator", () => {
-	beforeEach(async () => {
-		resetSettingsForTest();
-		await Settings.init({ inMemory: true, overrides: { "display.smoothStreaming": false } });
-	});
-
-	afterEach(() => {
-		resetSettingsForTest();
-	});
-
 	it("prints the indicator above the streamed tool row (the regression: annotation only at tool_execution_start left the marker unrendered)", async () => {
 		const { controller, ctx, markerRows, markerTexts } = createFixture();
 		// A non-read tool deliberately: its streamed row is created by the ordinary
 		// `ToolExecutionComponent` branch, the other row-creation site that must annotate.
 		const call = toolCall("toolu_jev_real_order", "bash", { command: "ls -la" });
 
-		controller.noteJevRoute(BASH_DECISION);
+		controller.noteJevRouteEvent(BASH_DECISION);
 
 		// The row is created here, during streaming — before any tool_execution_start.
 		await controller.handleEvent(messageUpdate([call], 0));
@@ -172,7 +183,7 @@ describe("EventController Jev route indicator", () => {
 		const { controller, ctx, markerRows, markerTexts } = createFixture();
 		const call = readCall("toolu_jev_fallback");
 
-		controller.noteJevRoute(READ_DECISION);
+		controller.noteJevRouteEvent(READ_DECISION);
 		await controller.handleEvent(toolStart(call));
 
 		const row = toolRow(ctx, call.id);
@@ -185,7 +196,7 @@ describe("EventController Jev route indicator", () => {
 		const { controller, ctx, markerRows, markerTexts } = createFixture();
 		const call = readCall("toolu_jev_read_group");
 
-		controller.noteJevRoute(READ_DECISION);
+		controller.noteJevRouteEvent(READ_DECISION);
 		await controller.handleEvent(messageUpdate([call], 0));
 
 		const group = toolRow(ctx, call.id);
@@ -200,7 +211,7 @@ describe("EventController Jev route indicator", () => {
 		const forced = readCall("toolu_jev_followup_read");
 		const followUp = toolCall("toolu_jev_followup_bash", "bash", { command: "ls" });
 
-		controller.noteJevRoute(READ_DECISION);
+		controller.noteJevRouteEvent(READ_DECISION);
 		await controller.handleEvent(messageUpdate([forced], 0));
 		await controller.handleEvent(toolStart(forced));
 		await controller.handleEvent(toolStart(followUp));
@@ -221,7 +232,7 @@ describe("EventController Jev route indicator", () => {
 		const unrelated = toolCall("toolu_jev_wrong_name_bash", "bash", { command: "ls" });
 		const forced = readCall("toolu_jev_wrong_name_read");
 
-		controller.noteJevRoute(READ_DECISION);
+		controller.noteJevRouteEvent(READ_DECISION);
 
 		// The model picked its own tool first: it must NOT be annotated as a router decision...
 		await controller.handleEvent(messageUpdate([unrelated], 0));
@@ -247,7 +258,9 @@ describe("EventController Jev route indicator", () => {
 		const { controller, markerRows } = createFixture();
 		const call = readCall("toolu_jev_no_decision");
 
-		// Nothing noted: the state a passthrough / low-confidence / none decision leaves.
+		// Nothing noted: no APPLIED route. A passthrough/low-confidence/none outcome
+		// still renders, but only as the standalone ◇ status line (covered by the
+		// status-line suite below) — never as a marker on a tool row.
 		await controller.handleEvent(messageUpdate([call], 0));
 		expect(markerRows).toHaveLength(0);
 
@@ -265,8 +278,8 @@ describe("EventController Jev route indicator", () => {
 		const call = readCall("toolu_jev_reused_turn");
 
 		// A retry/fallback republishes the same applied decision for the turn.
-		controller.noteJevRoute(READ_DECISION);
-		controller.noteJevRoute(READ_DECISION);
+		controller.noteJevRouteEvent(READ_DECISION);
+		controller.noteJevRouteEvent(READ_DECISION);
 
 		await controller.handleEvent(messageUpdate([call], 0));
 		const row = toolRow(ctx, call.id);
@@ -281,5 +294,102 @@ describe("EventController Jev route indicator", () => {
 		// And neither does the tool_execution_start fallback for the existing row.
 		await controller.handleEvent(toolStart(call));
 		expect(markerRows).toHaveLength(1);
+	});
+});
+
+/** `agent_start` — the only turn boundary the controller resets route state on. */
+function agentStart(): Extract<AgentSessionEvent, { type: "agent_start" }> {
+	return { type: "agent_start" } as Extract<AgentSessionEvent, { type: "agent_start" }>;
+}
+
+/** A model-chosen tool that the router did NOT force. */
+function editCall(id: string): ToolCall {
+	return toolCall(id, "edit", { file_path: "src/app.ts", old_string: "a", new_string: "b" });
+}
+
+describe("EventController Jev router status lines", () => {
+	it("prints a low-confidence passthrough as a standalone line and never marks the model's own tool", async () => {
+		const { controller, ctx, markerRows, markerTexts } = createFixture();
+
+		controller.noteJevRouteEvent(LOW_CONFIDENCE);
+		expect(markerTexts).toEqual(["◇ JEV · eval · 62% · passthrough"]);
+
+		// The model picks `edit` itself: the router status must not attach to its
+		// row, and the row must not be labelled as a forced route.
+		const call = editCall("toolu_jev_advisory_edit");
+		await controller.handleEvent(messageUpdate([call], 0));
+		await controller.handleEvent(toolStart(call));
+
+		expect(markerTexts).toEqual(["◇ JEV · eval · 62% · passthrough"]);
+		expect(ctx.chatContainer.children.indexOf(markerRows[0])).toBeLessThan(
+			ctx.chatContainer.children.indexOf(toolRow(ctx, call.id)),
+		);
+	});
+
+	it("prints the prose route as a standalone `none` line", async () => {
+		const { controller, markerTexts } = createFixture();
+
+		controller.noteJevRouteEvent(PROSE_ROUTE);
+		expect(markerTexts).toEqual(["◇ JEV · none · 82%"]);
+
+		// The model still answers with a tool: no `◆` marker is created for it.
+		const call = editCall("toolu_jev_none_edit");
+		await controller.handleEvent(messageUpdate([call], 0));
+		expect(markerTexts).toEqual(["◇ JEV · none · 82%"]);
+	});
+
+	it("prints operational failures with no confidence", async () => {
+		const { controller, markerTexts } = createFixture();
+
+		controller.noteJevRouteEvent({ kind: "failure", reason: "timeout" });
+		expect(markerTexts).toEqual(["◇ JEV · timeout"]);
+
+		controller.noteJevRouteEvent({ kind: "failure", reason: "judge-error" });
+		expect(markerTexts).toEqual(["◇ JEV · timeout", "◇ JEV · judge-error"]);
+	});
+
+	it("shows a re-published status once per turn and a different status afterwards", async () => {
+		const { controller, markerTexts } = createFixture();
+
+		// A retry/fallback re-publishes the same status for the same turn.
+		controller.noteJevRouteEvent(LOW_CONFIDENCE);
+		controller.noteJevRouteEvent(LOW_CONFIDENCE);
+		expect(markerTexts).toEqual(["◇ JEV · eval · 62% · passthrough"]);
+
+		// A different status reached later is still reported.
+		controller.noteJevRouteEvent(PROSE_ROUTE);
+		expect(markerTexts).toEqual(["◇ JEV · eval · 62% · passthrough", "◇ JEV · none · 82%"]);
+	});
+
+	it("keeps an applied route's provenance after a status line shown in the same turn", async () => {
+		const { controller, ctx, markerRows, markerTexts } = createFixture();
+
+		// A transient failure line, then the re-judged applied route: the status
+		// latch is separate state and must not swallow the pending provenance.
+		controller.noteJevRouteEvent({ kind: "failure", reason: "timeout" });
+		controller.noteJevRouteEvent(READ_DECISION);
+		const call = readCall("toolu_jev_status_then_applied");
+		await controller.handleEvent(messageUpdate([call], 0));
+		const row = toolRow(ctx, call.id);
+
+		expect(markerTexts).toEqual(["◇ JEV · timeout", "◆ JEV → read · 98%"]);
+		expect(ctx.chatContainer.children.indexOf(markerRows[1])).toBeLessThan(ctx.chatContainer.children.indexOf(row));
+	});
+
+	it("leaks no route state into the next turn", async () => {
+		const { controller, markerTexts } = createFixture();
+		// A decision published last turn whose tool never ran...
+		controller.noteJevRouteEvent(BASH_DECISION);
+		controller.noteJevRouteEvent(PROSE_ROUTE);
+		await controller.handleEvent(agentStart());
+
+		// ...must not annotate this turn's first row, and a status already shown
+		// last turn must be shown again for this turn.
+		const call = toolCall("toolu_jev_turn_leak_bash", "bash", { command: "ls" });
+		await controller.handleEvent(messageUpdate([call], 0));
+		expect(markerTexts).toEqual(["◇ JEV · none · 82%"]);
+
+		controller.noteJevRouteEvent(PROSE_ROUTE);
+		expect(markerTexts).toEqual(["◇ JEV · none · 82%", "◇ JEV · none · 82%"]);
 	});
 });

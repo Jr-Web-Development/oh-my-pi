@@ -205,7 +205,7 @@ import {
 	type SettingsStreamSlowModeContext,
 } from "./session/settings-stream-fn";
 import type { ToolRouterScope } from "./session/tool-router";
-import { TOOL_ROUTER_DECISION_EVENT_CHANNEL, toolRouterDecisionEvent } from "./session/tool-router-events";
+import { TOOL_ROUTER_DECISION_EVENT_CHANNEL, toolRouterRouteEvent } from "./session/tool-router-events";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
 import { createSnapcompactSavingsRecorder } from "./session/snapcompact-savings-journal";
 import { createSpeculativeToolExecutionConfig } from "./speculation/host";
@@ -4055,12 +4055,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							getJudge: () => toolRouterJudge,
 							scope,
 						},
-						// Display-only: publish the applied route (never passthrough,
-						// never the `none` route) so the TUI can annotate the forced
-						// tool's row. The gate lives in tool-router-events.ts.
+						// Display-only: publish the router's decision for this
+						// inference — the applied route and the standalone statuses
+						// (advisory passthrough, prose route, operational failure).
+						// The gate lives in tool-router-events.ts.
 						outcome => {
-							const decision = toolRouterDecisionEvent(outcome);
-							if (decision !== undefined) eventBus.emit(TOOL_ROUTER_DECISION_EVENT_CHANNEL, decision);
+							const event = toolRouterRouteEvent(outcome);
+							if (event !== undefined) eventBus.emit(TOOL_ROUTER_DECISION_EVENT_CHANNEL, event);
 						},
 					),
 				),

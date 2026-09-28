@@ -25,7 +25,12 @@ import type { InteractiveModeContext } from "../../modes/types";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
-import { PendingToolRoute, type ToolRouterDecisionEvent } from "../../session/tool-router-events";
+import {
+	PendingToolRoute,
+	toolRouterRouteLine,
+	TurnRouteStatusLine,
+	type ToolRouterRouteEvent,
+} from "../../session/tool-router-events";
 import {
 	isSilentAbort,
 	isUserInvokedSkillPrompt,
@@ -193,6 +198,9 @@ export class EventController {
 	// Display-only applied Jev route for the current turn; consumed by the row
 	// creation of the forced tool (see #annotateRoutedTool).
 	#pendingToolRoute = new PendingToolRoute();
+	// Display-only standalone router status (advisory / none / failure) for the
+	// current turn; printed once, never attached to a tool row.
+	#jevRouteStatusLine = new TurnRouteStatusLine();
 	// Set when `auto_retry_start` fires and cleared by `auto_retry_end` (both
 	// outcomes) — true for exactly the window a retry is outstanding. Gates
 	// `sendErrorNotification`: the wire-level `agent_end` for a retryable
@@ -377,13 +385,25 @@ export class EventController {
 	}
 
 	/**
-	 * Record the applied Jev route for the current turn. The indicator is not
-	 * printed here: it lands immediately before the row of the tool the router
-	 * forced, which can only be known at tool-row creation (see
-	 * #annotateRoutedTool).
+	 * Handle one published Jev route event for the current turn.
+	 *
+	 * An APPLIED route is only recorded: its indicator must land immediately
+	 * before the row of the tool the router forced, which can only be known at
+	 * tool-row creation (see #annotateRoutedTool).
+	 *
+	 * Every other kind is a ROUTER STATUS — the router looked and did not force
+	 * a tool — so it is printed as a standalone line of the turn right away.
+	 * Holding it for a tool row would attach it to a tool the model chose, and
+	 * a retry or fallback re-publishes the same status, so the latch keeps
+	 * exactly one line per status per turn.
 	 */
-	noteJevRoute(decision: ToolRouterDecisionEvent): void {
-		this.#pendingToolRoute.note(decision);
+	noteJevRouteEvent(event: ToolRouterRouteEvent): void {
+		if (event.kind === "applied") {
+			this.#pendingToolRoute.note(event);
+			return;
+		}
+		const line = toolRouterRouteLine(event);
+		if (this.#jevRouteStatusLine.accept(line)) this.ctx.showStatus(line);
 	}
 
 	dispose(): void {
@@ -427,7 +447,7 @@ export class EventController {
 	#annotateRoutedTool(toolName: string): void {
 		const decision = this.#pendingToolRoute.consume(toolName);
 		if (decision === undefined) return;
-		this.ctx.showStatus(`◆ JEV → ${toolName} · ${Math.round(decision.confidence * 100)}%`);
+		this.ctx.showStatus(toolRouterRouteLine(decision));
 	}
 	/** Freeze foreground tool cards once no live agent turn can complete them. */
 	#sealAbandonedForegroundTools(): void {
@@ -972,8 +992,10 @@ export class EventController {
 		this.#resolveDisplaceableTodo();
 		this.#lastAssistantComponent = undefined;
 		// A new turn re-routes: a decision published by a previous inference or
-		// turn must never annotate this turn's first row.
+		// turn must never annotate this turn's first row, and this turn's status
+		// lines must not be suppressed as a repeat of the previous turn's.
 		this.#pendingToolRoute.clear();
+		this.#jevRouteStatusLine.clear();
 		// Restore terminal errors in transcript history when their banner clears.
 		// Recoverable empty-output attempts are discarded by session recovery and
 		// must stay hidden rather than resurfacing as a stale inline error.

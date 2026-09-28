@@ -5,7 +5,8 @@
 ### Added
 
 - Added a `telemetry.otlpExportEnabled` setting (`/settings` → Providers → Privacy) that stops OMP from exporting OTLP traces, logs, and metrics even when `OTEL_*` endpoints are set in its environment; export stays enabled by default ([#13444](https://github.com/can1357/oh-my-pi/pull/13444) by [@krizh-p](https://github.com/krizh-p))
-- Added a short `◆ JEV → <tool> · <pct>%` line above the tool call the Jev tool router forced, so an applied route is visible in the transcript without reading logs; passthrough outcomes never render a line, and a provider retry or fallback re-publishes the same provenance
+- Added a short `◆ JEV → <tool> · <pct>%` line above the tool call the Jev tool router forced, so an applied route is visible in the transcript without reading logs; a provider retry or fallback re-publishes the same provenance
+- Added standalone `◇ JEV · …` status lines for a turn where the Jev router did not force a tool — an unapplied selection (`◇ JEV · eval · 62% · passthrough`), the prose route (`◇ JEV · none · 82%`), or a failed judge call (`◇ JEV · timeout`, `◇ JEV · judge-error`) — without ever marking a tool the model chose itself, and with guards that never consulted Jev staying silent
 
 ### Changed
 

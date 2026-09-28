@@ -98,7 +98,7 @@ import {
 	JUDGMENT_BATCH_PROGRESS_EVENT_CHANNEL,
 	type JudgmentBatchProgress,
 } from "../eval/judgment-batch-events";
-import { isToolRouterDecisionEvent, TOOL_ROUTER_DECISION_EVENT_CHANNEL } from "../session/tool-router-events";
+import { isToolRouterRouteEvent, TOOL_ROUTER_DECISION_EVENT_CHANNEL } from "../session/tool-router-events";
 import { onDownloadActivity } from "../downloads/activity";
 import { DownloadActivityHud, JudgmentBatchProgressHud } from "./progress-hud";
 import { autosaveApprovedPlan, planSaveFileName } from "../plan-mode/plan-autosave";
@@ -1426,11 +1426,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(TOOL_ROUTER_DECISION_EVENT_CHANNEL, data => {
-					if (!isToolRouterDecisionEvent(data)) {
+					if (!isToolRouterRouteEvent(data)) {
 						logger.warn("Ignoring malformed session:tool-router-decision event", { data });
 						return;
 					}
-					this.#eventController.noteJevRoute(data);
+					this.#eventController.noteJevRouteEvent(data);
 				}),
 			);
 		}
