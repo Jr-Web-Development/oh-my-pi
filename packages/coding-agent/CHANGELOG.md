@@ -2,13 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a short `◆ JEV → <tool> · <pct>%` line above the tool call the Jev tool router forced, so an applied route is visible in the transcript without reading logs; a provider retry or fallback re-publishes the same provenance
+- Added standalone `◇ JEV · …` status lines for a turn where the Jev router did not force a tool — an unapplied selection (`◇ JEV · eval · 62% · passthrough`), the prose route (`◇ JEV · none · 82%`), or a failed judge call (`◇ JEV · timeout`, `◇ JEV · judge-error`) — without ever marking a tool the model chose itself, and with guards that never consulted Jev staying silent
+
+### Fixed
+
+- Fixed the `jevify` magic-keyword notice prescribing the removed `JudgmentHandle`/`wait(handles)` judge API; bulk classification now runs through `judge_batch()`/`judgeBatch()` with a host-owned run drained across cells, leaving `judge()` as the single-state fallback
+
 ## [18.4.0] - 2026-09-28
 
 ### Added
 
-- Added a `telemetry.otlpExportEnabled` setting (`/settings` → Providers → Privacy) that stops OMP from exporting OTLP traces, logs, and metrics even when `OTEL_*` endpoints are set in its environment; export stays enabled by default ([#13444](https://github.com/can1357/oh-my-pi/pull/13444) by [@krizh-p](https://github.com/krizh-p))
-- Added a short `◆ JEV → <tool> · <pct>%` line above the tool call the Jev tool router forced, so an applied route is visible in the transcript without reading logs; a provider retry or fallback re-publishes the same provenance
-- Added standalone `◇ JEV · …` status lines for a turn where the Jev router did not force a tool — an unapplied selection (`◇ JEV · eval · 62% · passthrough`), the prose route (`◇ JEV · none · 82%`), or a failed judge call (`◇ JEV · timeout`, `◇ JEV · judge-error`) — without ever marking a tool the model chose itself, and with guards that never consulted Jev staying silent
 - Added the `telemetry.otlpExportEnabled` setting under Settings → Providers → Privacy to disable OTLP trace, log, and metric export even when `OTEL_*` endpoints are configured; exporting remains enabled by default.
 - Added a first-launch warning when Python evaluation is enabled but no working Python interpreter is available, with guidance for configuring `python.interpreter` and checking the installation with `omp setup python --check`.
 
@@ -20,12 +26,6 @@
 
 ### Fixed
 
-- Fixed the `jevify` magic-keyword notice prescribing the removed `JudgmentHandle`/`wait(handles)` judge API; bulk classification now runs through `judge_batch()`/`judgeBatch()` with a host-owned run drained across cells, leaving `judge()` as the single-state fallback
-- Fixed Windows sessions started from an 8.3 short path (such as `C:\Users\ADMINI~1\project`) using the short spelling as the project directory, and home-directory paths written with 8.3 aliases not being shortened to `~` in the status line, tool labels, and errors ([#13394](https://github.com/can1357/oh-my-pi/pull/13394) by [@CoderTCY](https://github.com/CoderTCY))
-- Fixed `edit` `PUT >N` moving a shallower insert (Go `case`, `} else {`) past a closing brace when that breaks the file's syntax ([#13520](https://github.com/can1357/oh-my-pi/pull/13520) by [@radkawar](https://github.com/radkawar))
-- Fixed `omp update` and other one-shot commands on Windows printing "ended before completing" and exiting 1 after they had actually completed ([#13470](https://github.com/can1357/oh-my-pi/issues/13470))
-- Fixed `omp update` on Windows printing "ended before completing: the event loop drained" and exiting 1 when no `~/.npmrc` or `~/.bunfig.toml` exists ([#13470](https://github.com/can1357/oh-my-pi/issues/13470))
-- Fixed `wait` with no owned background jobs blocking silently for up to 30 minutes while its parent or a peer kept running; it now returns after a 5-second window that grows to 5 minutes on repeated waits and names who is still running ([#13513](https://github.com/can1357/oh-my-pi/issues/13513), [#13516](https://github.com/can1357/oh-my-pi/pull/13516) by [@H4vC](https://github.com/H4vC))
 - Fixed `/tree` reopening saved Ask results instead of navigating past them when an optional preview was saved as `null`.
 - Fixed the legacy `createGrepTool()` API when searching with both a file path and a `glob` filter.
 - Improved task and subagent reliability: eligible saved usage resets are now redeemed automatically when polling is throttled or transient failures occur, concurrent tasks share confirmed resets, headless subagents retain assignments across session transitions, tagged `^model` agents are available to nested subagents, and `wait` returns promptly with information about still-running work when no owned jobs are available.
