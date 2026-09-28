@@ -127,7 +127,7 @@ import {
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
-import { resolveJudge, sharedJudgmentCache } from "./judgment";
+import { journalJudgmentUsage, resolveJudge, sharedJudgmentCache } from "./judgment";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
 import { setSharedLspEnabled } from "./lsp/client";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
@@ -4040,19 +4040,28 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// judge calls. The provider concurrency semaphores are module-shared,
 		// so per-consumer pipelines do not widen per-provider in-flight caps.
 		//
-		// `purpose` labels the judgment for the ledger and telemetry spans. The
-		// native answer cache keys on the canonical judgment state *and* the full
-		// question (name, type, instructions, criteria), and the router's criteria
-		// carry every candidate tool name and description, so a repeat of the same
-		// intent text under a different tool roster is a different key — a cached
-		// answer can never stand in for a roster it was not decided against. The
-		// router applies its own confidence threshold, timeout, fail-open and
-		// per-turn reuse outside the judge, unchanged by a hit.
+		// `purpose` labels the judgment for the ledger and telemetry spans, and
+		// `onUsage` journals every billed attempt on this session's branch — the
+		// same wiring every other session-scoped judgment uses, so the router's
+		// provider cost lands in session totals exactly once and a cache hit,
+		// which bills nothing, is never journaled as a new attempt. `telemetry`
+		// is this session's own configuration (the value the agent loop gets), so
+		// the router's judgments emit the same `judgment` spans as the rest of the
+		// session under the host's export policy. The native answer cache keys on
+		// the canonical judgment state *and* the full question (name, type,
+		// instructions, criteria), and the router's criteria carry every candidate
+		// tool name and description, so a repeat of the same intent text under a
+		// different tool roster is a different key — a cached answer can never stand
+		// in for a roster it was not decided against. The router applies its own
+		// confidence threshold, timeout, fail-open and per-turn reuse outside the
+		// judge, unchanged by a hit.
 		const toolRouterJudge = resolveJudge({
 			settings,
 			registry: modelRegistry,
 			sessionId: providerSessionId,
 			purpose: "tool-router",
+			onUsage: journalJudgmentUsage(sessionManager),
+			telemetry: options.telemetry,
 			cache: sharedJudgmentCache(),
 		});
 		const slowModeContext: SettingsStreamSlowModeContext = {
